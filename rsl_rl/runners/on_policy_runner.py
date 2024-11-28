@@ -16,6 +16,61 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
 
+class StateHistoryBuffer:
+    def __init__(self, num_envs: int, num_obs: int, max_length: int, device: torch.device = "cpu"):
+        """
+        Initialize a FIFO queue for state history, starting with zeros.
+
+        Args:
+            num_envs (int): Number of environments.
+            num_obs (int): Number of observations per environment.
+            max_length (int): Maximum length of the state history for each environment.
+            device (torch.device): Device to store the buffer (e.g., "cuda" or "cpu").
+        """
+        self.num_envs = num_envs
+        self.num_obs = num_obs
+        self.max_length = max_length
+        self.device = device
+
+        # Initialize the buffer with zeros of shape (num_envs, num_obs * max_length)
+        self.buffer = torch.zeros((num_envs, num_obs * max_length), device=device)
+
+    def add(self, observation: torch.Tensor):
+        """
+        Add a new observation to the buffer. Perform FIFO replacement.
+
+        Args:
+            observation (torch.Tensor): The new observation to add. 
+                                         Should have shape `(num_envs, num_obs)`.
+        """
+        if observation.shape != (self.num_envs, self.num_obs):
+            raise ValueError(f"Observation shape must be ({self.num_envs}, {self.num_obs})")
+
+        # Shift the buffer to make space for the new observation
+        self.buffer[:, :-self.num_obs] = self.buffer[:, self.num_obs:]
+
+        # Add the new observation at the end
+        self.buffer[:, -self.num_obs:] = observation
+
+    def get(self) -> torch.Tensor:
+        """
+        Get the current state history.
+
+        Returns:
+            torch.Tensor: A tensor of shape `(num_envs, num_obs * max_length)`.
+        """
+        return self.buffer.detach().clone()
+    
+    def reset(self, done: torch.Tensor):
+        """Reset the buffer for environments that are done.
+
+        Args:
+            done (torch.Tensor): mask of dones.
+        """
+
+        done_indices = torch.nonzero(done == 1)
+        self.buffer[done_indices] = 0.0
+
 
 class OnPolicyRunner:
     """On-policy runner for training and evaluation."""
@@ -27,14 +82,17 @@ class OnPolicyRunner:
         self.device = device
         self.env = env
         obs, extras = self.env.get_observations()
-        num_obs = obs.shape[1]
+        single_time_step_num_obs = obs.shape[1]
+        self.obs_history_buffer = StateHistoryBuffer(num_envs=self.env.num_envs, num_obs=single_time_step_num_obs, max_length=5, device=self.device)
+        obs_history = self.obs_history_buffer.get()
+        num_obs_history = obs_history.shape[1]
         if "critic" in extras["observations"]:
             num_critic_obs = extras["observations"]["critic"].shape[1]
         else:
-            num_critic_obs = num_obs
+            num_critic_obs = num_obs_history
         actor_critic_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
         actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
-            num_obs, num_critic_obs, self.env.num_actions, **self.policy_cfg
+            num_obs_history, num_critic_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
@@ -42,8 +100,8 @@ class OnPolicyRunner:
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
         if self.empirical_normalization:
-            self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
-            self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
+            self.obs_normalizer = EmpiricalNormalization(shape=[single_time_step_num_obs], until=1.0e8).to(self.device)
+            self.critic_obs_normalizer = EmpiricalNormalization(shape=[single_time_step_num_obs], until=1.0e8).to(self.device)
         else:
             self.obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
@@ -51,7 +109,7 @@ class OnPolicyRunner:
         self.alg.init_storage(
             self.env.num_envs,
             self.num_steps_per_env,
-            [num_obs],
+            [num_obs_history],
             [num_critic_obs],
             [self.env.num_actions],
         )
@@ -91,8 +149,10 @@ class OnPolicyRunner:
                 self.env.episode_length_buf, high=int(self.env.max_episode_length)
             )
         obs, extras = self.env.get_observations()
-        critic_obs = extras["observations"].get("critic", obs)
-        obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+        self.obs_history_buffer.add(obs)
+        obs_history = self.obs_history_buffer.get()
+        critic_obs = extras["observations"].get("critic", obs_history)
+        obs_history, critic_obs = obs_history.to(self.device), critic_obs.to(self.device)
         self.train_mode()  # switch to train mode (for dropout for example)
 
         ep_infos = []
@@ -108,8 +168,9 @@ class OnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs)
+                    actions = self.alg.act(obs_history, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
+
                     # move to the right device
                     obs, critic_obs, rewards, dones = (
                         obs.to(self.device),
@@ -119,10 +180,15 @@ class OnPolicyRunner:
                     )
                     # perform normalization
                     obs = self.obs_normalizer(obs)
+                    if dones.any():
+                        self.obs_history_buffer.reset(dones)
+                    self.obs_history_buffer.add(obs)
+                    obs_history = self.obs_history_buffer.get()
+
                     if "critic" in infos["observations"]:
                         critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"])
                     else:
-                        critic_obs = obs
+                        critic_obs = obs_history
                     # process the step
                     self.alg.process_env_step(rewards, dones, infos)
 
