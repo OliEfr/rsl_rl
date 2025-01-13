@@ -32,13 +32,13 @@ class ActorFreq(nn.Module):
         )
 
     def forward(self, x):
-        all = self.actor_all(x)
+        all = self.actor_all(x) # residual action
 
         # reshape to extract target commands
         batch_size = x.shape[0]
         x = x.view(batch_size, self.state_history_length, -1)
         target_cmds = x[:, :, self.cmd_start:self.cmd_end].reshape(batch_size, -1)
-        freq = self.actor_freq(target_cmds)
+        freq = self.actor_freq(target_cmds) # latent actions
 
         return torch.cat([all, freq], dim=1)
 
@@ -73,11 +73,12 @@ class ActorCritic(nn.Module):
         actor_layers.append(activation)
         for layer_index in range(len(actor_hidden_dims)):
             if layer_index == len(actor_hidden_dims) - 1:
-                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], 12)) # only 12 outputs for residual actions
+                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], 12)) # only 12 outputs for residual actions # num_actions
             else:
                 actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], actor_hidden_dims[layer_index + 1]))
                 actor_layers.append(activation)
         self.actor = ActorFreq(actor_layers)
+        # self.actor = nn.Sequential(*actor_layers)
 
         # Value function
         critic_layers = []
