@@ -10,9 +10,10 @@ from torch.distributions import Normal
 
 
 class ActorFreq(nn.Module):
-    def __init__(self, actor_layers):
+    def __init__(self, actor_layers, vel_dependent_actor_latent_dim):
         super().__init__()
         self.actor_all = nn.Sequential(*actor_layers)
+
         self.state_history_length = 5
         self.obs_single_step = actor_layers[0].in_features //  self.state_history_length
         assert self.obs_single_step == 56
@@ -21,14 +22,14 @@ class ActorFreq(nn.Module):
         self.cmd_end = 9
 
         assert actor_layers[-1].out_features == 12, "Expected 12 outputs for residual actions"
-        self.robot_latent_dim = 1 + 4 * 2 # main freq, 4 legs with freq and amp each
+        self.vel_dependent_actor_latent_dim = vel_dependent_actor_latent_dim
 
         self.actor_freq = nn.Sequential(
             nn.Linear((self.cmd_end - self.cmd_start) * self.state_history_length, 64),
             nn.ELU(),
             nn.Linear(64, 64),
             nn.ELU(),
-            nn.Linear(64,  self.robot_latent_dim), # main freq, 4 legs with freq and amp each
+            nn.Linear(64,  self.vel_dependent_actor_latent_dim),
         )
 
     def forward(self, x):
@@ -39,6 +40,8 @@ class ActorFreq(nn.Module):
         x = x.view(batch_size, self.state_history_length, -1)
         target_cmds = x[:, :, self.cmd_start:self.cmd_end].reshape(batch_size, -1)
         freq = self.actor_freq(target_cmds) # latent actions
+
+        assert all.shape[1] == 12 # residual action should always have num_joints outputs
 
         return torch.cat([all, freq], dim=1)
 
@@ -55,6 +58,7 @@ class ActorCritic(nn.Module):
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
         init_noise_std=1.0,
+        vel_dependent_actor_latent_dim=0, # zero disables it
         **kwargs,
     ):
         if kwargs:
@@ -73,12 +77,14 @@ class ActorCritic(nn.Module):
         actor_layers.append(activation)
         for layer_index in range(len(actor_hidden_dims)):
             if layer_index == len(actor_hidden_dims) - 1:
-                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], 12)) # only 12 outputs for residual actions # num_actions
+                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], 12)) # output num_joint full actions or residual actions
             else:
                 actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], actor_hidden_dims[layer_index + 1]))
                 actor_layers.append(activation)
-        self.actor = ActorFreq(actor_layers)
-        # self.actor = nn.Sequential(*actor_layers)
+        if vel_dependent_actor_latent_dim == 0:
+            self.actor = nn.Sequential(*actor_layers)
+        else:
+            self.actor = ActorFreq(actor_layers, vel_dependent_actor_latent_dim)
 
         # Value function
         critic_layers = []

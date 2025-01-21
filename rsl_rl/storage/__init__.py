@@ -5,5 +5,7 @@
 
 from .rollout_storage import RolloutStorage
 from .obs_history_storage import ObservationHistoryStorage
+from .rollout_storage import RolloutStorage
 
-__all__ = ["RolloutStorage", "ObservationHistoryStorage"]
+
+__all__ = ["RolloutStorage", "ObservationHistoryStorage", "RolloutStorage"]
