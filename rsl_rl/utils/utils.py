@@ -126,31 +126,33 @@ def quaternion_slerp(q0, q1, fraction, spin=0, shortestpath=True):
     return out
 
 class RunningMeanStd(object):
-    def __init__(self, epsilon: float = 1e-4, shape: Tuple[int, ...] = ()):
+    def __init__(self, device, epsilon: float = 1e-4, shape: Tuple[int, ...] = ()):
         """
         Calulates the running mean and std of a data stream
         https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
         :param epsilon: helps with arithmetic issues
         :param shape: the shape of the data stream's output
         """
-        self.mean = np.zeros(shape, np.float64)
-        self.var = np.ones(shape, np.float64)
+        self.device=device
+        self.mean = torch.zeros(shape, dtype=torch.float64, device=self.device)
+        self.var = torch.ones(shape, dtype=torch.float64, device=self.device)
         self.count = epsilon
 
-    def update(self, arr: np.ndarray) -> None:
-        batch_mean = np.mean(arr, axis=0)
-        batch_var = np.var(arr, axis=0)
+    def update(self, arr: torch.tensor) -> None:
+        arr = arr.double()
+        batch_mean = torch.mean(arr, axis=0)
+        batch_var = torch.var(arr, axis=0, correction=0) # correction=0 is equal to np.var
         batch_count = arr.shape[0]
         self.update_from_moments(batch_mean, batch_var, batch_count)
 
-    def update_from_moments(self, batch_mean: np.ndarray, batch_var: np.ndarray, batch_count: int) -> None:
+    def update_from_moments(self, batch_mean: torch.tensor, batch_var: torch.tensor, batch_count: int) -> None:
         delta = batch_mean - self.mean
         tot_count = self.count + batch_count
 
         new_mean = self.mean + delta * batch_count / tot_count
         m_a = self.var * self.count
         m_b = batch_var * batch_count
-        m_2 = m_a + m_b + np.square(delta) * self.count * batch_count / (self.count + batch_count)
+        m_2 = m_a + m_b + torch.square(delta) * self.count * batch_count / (self.count + batch_count)
         new_var = m_2 / (self.count + batch_count)
 
         new_count = batch_count + self.count
@@ -160,21 +162,20 @@ class RunningMeanStd(object):
         self.count = new_count
 
 class Normalizer(RunningMeanStd):
-    def __init__(self, input_dim, epsilon=1e-4, clip_obs=10.0):
-        super().__init__(shape=input_dim)
+    def __init__(self, input_dim, device, epsilon=1e-4, clip_obs=10.0):
+        super().__init__(shape=input_dim, device=device)
+
         self.epsilon = epsilon
         self.clip_obs = clip_obs
 
-    def normalize(self, input):
-        return np.clip(
-            (input - self.mean) / np.sqrt(self.var + self.epsilon),
-            -self.clip_obs, self.clip_obs)
+    # def normalize(self, input):
+    #     return np.clip(
+    #         (input - self.mean) / np.sqrt(self.var + self.epsilon),
+    #         -self.clip_obs, self.clip_obs)
 
-    def normalize_torch(self, input, device):
-        mean_torch = torch.tensor(
-            self.mean, device=device, dtype=torch.float32)
-        std_torch = torch.sqrt(torch.tensor(
-            self.var + self.epsilon, device=device, dtype=torch.float32))
+    def normalize_torch(self, input):
+        mean_torch = self.mean.clone().detach().to(dtype=torch.float32)
+        std_torch = torch.sqrt((self.var + self.epsilon).clone().detach().to(dtype=torch.float32))
         return torch.clamp(
             (input - mean_torch) / std_torch, -self.clip_obs, self.clip_obs)
 

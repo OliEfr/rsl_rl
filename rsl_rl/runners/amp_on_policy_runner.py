@@ -33,7 +33,6 @@ import os
 from collections import deque
 import statistics
 
-import numpy as np
 from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 import torch
 
@@ -86,7 +85,7 @@ class AMPOnPolicyRunner:
             device, time_between_frames=self.env.unwrapped.step_dt, preload_transitions=True,
             num_preload_transitions=train_cfg['amp_num_preload_transitions'],
             motion_files=self.cfg["amp_motion_files"])
-        amp_normalizer = Normalizer(amp_data.observation_dim)
+        amp_normalizer = Normalizer(amp_data.observation_dim, self.device)
         discriminator = AMPDiscriminator(
             amp_data.observation_dim * 2,
             train_cfg['amp_reward_coef'],
