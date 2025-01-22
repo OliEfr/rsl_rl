@@ -101,7 +101,7 @@ class AMPOnPolicyRunner:
                 - self.env.unwrapped.scene["robot"].data.soft_joint_pos_limits[0, :, 0]
             )
         )
-        self.alg: PPO = alg_class(actor_critic, discriminator, amp_data, amp_normalizer, device=self.device, min_std=min_std, **self.alg_cfg)
+        self.alg: AMPPPO = alg_class(actor_critic, discriminator, amp_data, amp_normalizer, device=self.device, min_std=min_std, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
 
@@ -179,7 +179,8 @@ class AMPOnPolicyRunner:
                 for i in range(self.num_steps_per_env):
                     actions = self.alg.act(obs_history, critic_obs, amp_obs)
                     obs, rewards, dones, infos, reset_env_ids, terminal_amp_states = self.env.step(actions)
-                    next_amp_obs = self.env.get_amp_observations()
+                    
+                    next_amp_obs = self.env.unwrapped.get_amp_observations()
 
                     obs, critic_obs, next_amp_obs, rewards, dones = (
                         obs.to(self.device),

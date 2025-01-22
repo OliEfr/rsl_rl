@@ -2,6 +2,7 @@ import os
 import glob
 import json
 import logging
+from typing import List
 
 import torch
 import numpy as np
@@ -55,14 +56,19 @@ class AMPLoader:
             preload_transitions=False,
             num_preload_transitions=1000000,
             motion_files=glob.glob('datasets/motion_files2/*'),
+            amp_data: List[str] =["JOINT_POS", "JOINT_VEL"] # order must correspond to data returned by get_amp_observations() of the environment
             ):
         """Expert dataset provides AMP observations from Dog mocap dataset.
 
         time_between_frames: Amount of time in seconds between transition.
         """
+        assert preload_transitions == True, "I think the code w/o preloading is broken"
+
+        self.amp_data_indices = self.get_amp_data_indices(amp_data)
+
         self.device = device
         self.time_between_frames = time_between_frames
-        
+
         # Values to store for each trajectory.
         self.trajectories = []
         self.trajectories_full = []
@@ -90,12 +96,11 @@ class AMPLoader:
                         AMPLoader.POS_SIZE:
                             (AMPLoader.POS_SIZE +
                              AMPLoader.ROT_SIZE)] = root_rot
-                
-                # Remove first 7 observation dimensions (root_pos and root_orn).
+
                 self.trajectories.append(torch.tensor(
                     motion_data[
                         :,
-                        AMPLoader.ROOT_ROT_END_IDX:AMPLoader.JOINT_VEL_END_IDX
+                        self.amp_data_indices
                     ], dtype=torch.float32, device=device))
                 self.trajectories_full.append(torch.tensor(
                         motion_data[:, :AMPLoader.JOINT_VEL_END_IDX],
@@ -110,7 +115,7 @@ class AMPLoader:
                 self.trajectory_num_frames.append(float(motion_data.shape[0]))
 
             print(f"Loaded {traj_len}s. motion from {motion_file}.")
-        
+
         # Trajectory weights are used to sample some trajectories more than others.
         self.trajectory_weights = np.array(self.trajectory_weights) / np.sum(self.trajectory_weights)
         self.trajectory_frame_durations = np.array(self.trajectory_frame_durations)
@@ -127,8 +132,41 @@ class AMPLoader:
             self.preloaded_s_next = self.get_full_frame_at_time_batch(traj_idxs, times + self.time_between_frames)
             print(f'Finished preloading')
 
-
         self.all_trajectories_full = torch.vstack(self.trajectories_full)
+
+    def get_amp_data_indices(self, amp_data):
+        # string to index mapping
+        index_map = {
+            "ROOT_POS": (AMPLoader.ROOT_POS_START_IDX, AMPLoader.ROOT_POS_END_IDX),
+            "ROOT_ROT": (AMPLoader.ROOT_ROT_START_IDX, AMPLoader.ROOT_ROT_END_IDX),
+            "JOINT_POS": (AMPLoader.JOINT_POSE_START_IDX, AMPLoader.JOINT_POSE_END_IDX),
+            "TAR_TOE_POS": (
+                AMPLoader.TAR_TOE_POS_LOCAL_START_IDX,
+                AMPLoader.TAR_TOE_POS_LOCAL_END_IDX,
+            ),
+            "LINEAR_VEL": (
+                AMPLoader.LINEAR_VEL_START_IDX,
+                AMPLoader.LINEAR_VEL_END_IDX,
+            ),
+            "ANGULAR_VEL": (
+                AMPLoader.ANGULAR_VEL_START_IDX,
+                AMPLoader.ANGULAR_VEL_END_IDX,
+            ),
+            "JOINT_VEL": (AMPLoader.JOINT_VEL_START_IDX, AMPLoader.JOINT_VEL_END_IDX),
+            "TAR_TOE_VEL": (
+                AMPLoader.TAR_TOE_VEL_LOCAL_START_IDX,
+                AMPLoader.TAR_TOE_VEL_LOCAL_END_IDX,
+            ),
+        }
+
+        amp_data_indices = []
+        for data in amp_data:
+            if data not in index_map:
+                raise ValueError(f"Unknown section: {data}")
+            start, end = index_map[data]
+            amp_data_indices.extend(range(start, end))
+
+        return amp_data_indices
 
     def reorder_from_pybullet_to_isaac(self, motion_data):
         """Convert from PyBullet ordering to Isaac ordering.
@@ -142,7 +180,7 @@ class AMPLoader:
         jp_fr, jp_fl, jp_rr, jp_rl = np.split(
             AMPLoader.get_joint_pose_batch(motion_data), 4, axis=1)
         joint_pos = np.hstack([jp_fl, jp_fr, jp_rl, jp_rr])
-    
+
         fp_fr, fp_fl, fp_rr, fp_rl = np.split(
             AMPLoader.get_tar_toe_pos_local_batch(motion_data), 4, axis=1)
         foot_pos = np.hstack([fp_fl, fp_fr, fp_rl, fp_rr])
@@ -317,15 +355,12 @@ class AMPLoader:
             if self.preload_transitions:
                 idxs = np.random.choice(
                     self.preloaded_s.shape[0], size=mini_batch_size)
-                s = self.preloaded_s[idxs, AMPLoader.JOINT_POSE_START_IDX:AMPLoader.JOINT_VEL_END_IDX]
-                s = torch.cat([
-                    s,
-                    self.preloaded_s[idxs, AMPLoader.ROOT_POS_START_IDX + 2:AMPLoader.ROOT_POS_START_IDX + 3]], dim=-1)
-                s_next = self.preloaded_s_next[idxs, AMPLoader.JOINT_POSE_START_IDX:AMPLoader.JOINT_VEL_END_IDX]
-                s_next = torch.cat([
-                    s_next,
-                    self.preloaded_s_next[idxs, AMPLoader.ROOT_POS_START_IDX + 2:AMPLoader.ROOT_POS_START_IDX + 3]], dim=-1)
+                s = self.preloaded_s[idxs]
+                s = s [:, self.amp_data_indices]
+                s_next = self.preloaded_s_next[idxs]
+                s_next = s_next[:, self.amp_data_indices]
             else:
+                raise NotImplementedError("I think using this is broken.")
                 s, s_next = [], []
                 traj_idxs = self.weighted_traj_idx_sample_batch(mini_batch_size)
                 times = self.traj_time_sample_batch(traj_idxs)
@@ -334,7 +369,7 @@ class AMPLoader:
                     s_next.append(
                         self.get_frame_at_time(
                             traj_idx, frame_time + self.time_between_frames))
-                
+
                 s = torch.vstack(s)
                 s_next = torch.vstack(s_next)
             yield s, s_next
@@ -342,7 +377,7 @@ class AMPLoader:
     @property
     def observation_dim(self):
         """Size of AMP observations."""
-        return self.trajectories[0].shape[1] + 1
+        return self.trajectories[0].shape[1]
 
     @property
     def num_motions(self):
