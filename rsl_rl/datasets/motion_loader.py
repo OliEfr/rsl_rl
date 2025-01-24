@@ -62,7 +62,6 @@ class AMPLoader:
 
         time_between_frames: Amount of time in seconds between transition.
         """
-        assert preload_transitions == True, "I think the code w/o preloading is broken"
 
         self.amp_data_indices = self.get_amp_data_indices(amp_data)
 

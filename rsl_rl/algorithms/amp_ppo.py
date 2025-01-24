@@ -171,96 +171,140 @@ class AMPPPO:
             self.storage.num_envs * self.storage.num_transitions_per_env //
                 self.num_mini_batches)
         for sample, sample_amp_policy, sample_amp_expert in zip(generator, amp_policy_generator, amp_expert_generator):
+            (
+                obs_batch,
+                critic_obs_batch,
+                actions_batch,
+                target_values_batch,
+                advantages_batch,
+                returns_batch,
+                old_actions_log_prob_batch,
+                old_mu_batch,
+                old_sigma_batch,
+                hid_states_batch,
+                masks_batch,
+            ) = sample
+            aug_obs_batch = obs_batch.detach()
+            self.actor_critic.act(
+                aug_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0]
+            )
+            actions_log_prob_batch = self.actor_critic.get_actions_log_prob(
+                actions_batch
+            )
+            aug_critic_obs_batch = critic_obs_batch.detach()
+            value_batch = self.actor_critic.evaluate(
+                aug_critic_obs_batch,
+                masks=masks_batch,
+                hidden_states=hid_states_batch[1],
+            )
+            mu_batch = self.actor_critic.action_mean
+            sigma_batch = self.actor_critic.action_std
+            entropy_batch = self.actor_critic.entropy
 
-                obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-                    old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch = sample
-                aug_obs_batch = obs_batch.detach()
-                self.actor_critic.act(aug_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
-                actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-                aug_critic_obs_batch = critic_obs_batch.detach()
-                value_batch = self.actor_critic.evaluate(aug_critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
-                mu_batch = self.actor_critic.action_mean
-                sigma_batch = self.actor_critic.action_std
-                entropy_batch = self.actor_critic.entropy
+            # KL
+            if self.desired_kl != None and self.schedule == "adaptive":
+                with torch.inference_mode():
+                    kl = torch.sum(
+                        torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
+                        + (
+                            torch.square(old_sigma_batch)
+                            + torch.square(old_mu_batch - mu_batch)
+                        )
+                        / (2.0 * torch.square(sigma_batch))
+                        - 0.5,
+                        axis=-1,
+                    )
+                    kl_mean = torch.mean(kl)
 
-                # KL
-                if self.desired_kl != None and self.schedule == 'adaptive':
-                    with torch.inference_mode():
-                        kl = torch.sum(
-                            torch.log(sigma_batch / old_sigma_batch + 1.e-5) + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch)) / (2.0 * torch.square(sigma_batch)) - 0.5, axis=-1)
-                        kl_mean = torch.mean(kl)
+                    if kl_mean > self.desired_kl * 2.0:
+                        self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                    elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                        self.learning_rate = min(1e-2, self.learning_rate * 1.5)
 
-                        if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = self.learning_rate
 
-                        for param_group in self.optimizer.param_groups:
-                            param_group['lr'] = self.learning_rate
+            # Surrogate loss
+            ratio = torch.exp(
+                actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch)
+            )
+            surrogate = -torch.squeeze(advantages_batch) * ratio
+            surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
+                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+            )
+            surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
+            # Value function loss
+            if self.use_clipped_value_loss:
+                value_clipped = target_values_batch + (
+                    value_batch - target_values_batch
+                ).clamp(-self.clip_param, self.clip_param)
+                value_losses = (value_batch - returns_batch).pow(2)
+                value_losses_clipped = (value_clipped - returns_batch).pow(2)
+                value_loss = torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_loss = (returns_batch - value_batch).pow(2).mean()
 
-                # Surrogate loss
-                ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
-                surrogate = -torch.squeeze(advantages_batch) * ratio
-                surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(ratio, 1.0 - self.clip_param,
-                                                                                1.0 + self.clip_param)
-                surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+            # Discriminator loss.
+            policy_state, policy_next_state = sample_amp_policy
+            expert_state, expert_next_state = sample_amp_expert
+            if self.amp_normalizer is not None:
+                with torch.no_grad():
+                    policy_state = self.amp_normalizer.normalize_torch(policy_state)
+                    policy_next_state = self.amp_normalizer.normalize_torch(
+                        policy_next_state
+                    )
+                    expert_state = self.amp_normalizer.normalize_torch(expert_state)
+                    expert_next_state = self.amp_normalizer.normalize_torch(
+                        expert_next_state
+                    )
+            policy_d = self.discriminator(
+                torch.cat([policy_state, policy_next_state], dim=-1)
+            )
+            expert_d = self.discriminator(
+                torch.cat([expert_state, expert_next_state], dim=-1)
+            )
+            expert_loss = torch.nn.MSELoss()(
+                expert_d, torch.ones(expert_d.size(), device=self.device)
+            )
+            policy_loss = torch.nn.MSELoss()(
+                policy_d, -1 * torch.ones(policy_d.size(), device=self.device)
+            )
+            amp_loss = 0.5 * (expert_loss + policy_loss)
+            grad_pen_loss = self.discriminator.compute_grad_pen(
+                *sample_amp_expert, lambda_=10
+            )
 
-                # Value function loss
-                if self.use_clipped_value_loss:
-                    value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(-self.clip_param,
-                                                                                                    self.clip_param)
-                    value_losses = (value_batch - returns_batch).pow(2)
-                    value_losses_clipped = (value_clipped - returns_batch).pow(2)
-                    value_loss = torch.max(value_losses, value_losses_clipped).mean()
-                else:
-                    value_loss = (returns_batch - value_batch).pow(2).mean()
+            # Compute total loss.
+            loss = (
+                surrogate_loss
+                + self.value_loss_coef * value_loss
+                - self.entropy_coef * entropy_batch.mean()
+                + amp_loss
+                + grad_pen_loss
+            )
 
-                # Discriminator loss.
-                policy_state, policy_next_state = sample_amp_policy
-                expert_state, expert_next_state = sample_amp_expert
-                if self.amp_normalizer is not None:
-                    with torch.no_grad():
-                        policy_state = self.amp_normalizer.normalize_torch(policy_state)
-                        policy_next_state = self.amp_normalizer.normalize_torch(policy_next_state)
-                        expert_state = self.amp_normalizer.normalize_torch(expert_state)
-                        expert_next_state = self.amp_normalizer.normalize_torch(expert_next_state)
-                policy_d = self.discriminator(torch.cat([policy_state, policy_next_state], dim=-1))
-                expert_d = self.discriminator(torch.cat([expert_state, expert_next_state], dim=-1))
-                expert_loss = torch.nn.MSELoss()(
-                    expert_d, torch.ones(expert_d.size(), device=self.device))
-                policy_loss = torch.nn.MSELoss()(
-                    policy_d, -1 * torch.ones(policy_d.size(), device=self.device))
-                amp_loss = 0.5 * (expert_loss + policy_loss)
-                grad_pen_loss = self.discriminator.compute_grad_pen(
-                    *sample_amp_expert, lambda_=10)
+            # Gradient step
+            self.optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
 
-                # Compute total loss.
-                loss = (
-                    surrogate_loss +
-                    self.value_loss_coef * value_loss -
-                    self.entropy_coef * entropy_batch.mean() +
-                    amp_loss + grad_pen_loss)
+            if self.min_std is not None:
+                self.actor_critic.std.data = self.actor_critic.std.data.clamp(
+                    min=self.min_std
+                )
 
-                # Gradient step
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
-                self.optimizer.step()
+            if self.amp_normalizer is not None:
+                self.amp_normalizer.update(policy_state)
+                self.amp_normalizer.update(expert_state)
 
-                if self.min_std is not None:
-                    self.actor_critic.std.data = self.actor_critic.std.data.clamp(min=self.min_std)
-
-                if self.amp_normalizer is not None:
-                    self.amp_normalizer.update(policy_state)
-                    self.amp_normalizer.update(expert_state)
-
-                mean_value_loss += value_loss.item()
-                mean_surrogate_loss += surrogate_loss.item()
-                mean_amp_loss += amp_loss.item()
-                mean_grad_pen_loss += grad_pen_loss.item()
-                mean_policy_pred += policy_d.mean().item()
-                mean_expert_pred += expert_d.mean().item()
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_amp_loss += amp_loss.item()
+            mean_grad_pen_loss += grad_pen_loss.item()
+            mean_policy_pred += policy_d.mean().item()
+            mean_expert_pred += expert_d.mean().item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates

@@ -28,6 +28,7 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
+from csv import Error
 import time
 import os
 from collections import deque
@@ -193,9 +194,11 @@ class AMPOnPolicyRunner:
                     next_amp_obs_with_term = torch.clone(next_amp_obs)
                     next_amp_obs_with_term[reset_env_ids] = terminal_amp_states
 
-                    rewards = self.alg.discriminator.predict_amp_reward(
-                        amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer)[0]
+                    rewards, _, amp_rewards_logging = self.alg.discriminator.predict_amp_reward(
+                        amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer)
                     amp_obs = torch.clone(next_amp_obs)
+
+                    infos["log"]["amp_rewards"] = torch.mean(amp_rewards_logging)
 
                     # perform normalization
                     obs = self.obs_normalizer(obs)
@@ -275,6 +278,9 @@ class AMPOnPolicyRunner:
                 if "/" in key:
                     self.writer.add_scalar(key, value, locs["it"])
                     ep_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
+                elif key == "amp_rewards":
+                    self.writer.add_scalar("AMP/rewards", value, locs["it"])
+                    ep_string += f"""{f'Mean episode amp_rewards:':>{pad}} {value:.4f}\n"""
                 else:
                     self.writer.add_scalar("Episode/" + key, value, locs["it"])
                     ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
@@ -283,6 +289,11 @@ class AMPOnPolicyRunner:
 
         self.writer.add_scalar("Loss/value_function", locs["mean_value_loss"], locs["it"])
         self.writer.add_scalar("Loss/surrogate", locs["mean_surrogate_loss"], locs["it"])
+
+        self.writer.add_scalar('Loss/mean_amp_loss', locs['mean_amp_loss'], locs['it'])
+        self.writer.add_scalar('Loss/mean_grad_pen_loss', locs['mean_grad_pen_loss'], locs['it'])
+        self.writer.add_scalar('AMP/mean_policy_pred', locs['mean_policy_pred'], locs['it'])
+        self.writer.add_scalar('AMP/mean_expert_pred', locs['mean_expert_pred'], locs['it'])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
         self.writer.add_scalar("Perf/total_fps", fps, locs["it"])

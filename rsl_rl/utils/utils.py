@@ -168,11 +168,6 @@ class Normalizer(RunningMeanStd):
         self.epsilon = epsilon
         self.clip_obs = clip_obs
 
-    # def normalize(self, input):
-    #     return np.clip(
-    #         (input - self.mean) / np.sqrt(self.var + self.epsilon),
-    #         -self.clip_obs, self.clip_obs)
-
     def normalize_torch(self, input):
         mean_torch = self.mean.clone().detach().to(dtype=torch.float32)
         std_torch = torch.sqrt((self.var + self.epsilon).clone().detach().to(dtype=torch.float32))
