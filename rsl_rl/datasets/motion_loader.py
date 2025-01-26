@@ -11,10 +11,20 @@ from pybullet_utils import transformations
 from rsl_rl.utils import utils
 from rsl_rl.datasets import pose3d
 from rsl_rl.datasets import motion_util
+import yaml
+import matplotlib.pyplot as plt
+
+constants_path = "source/constants.yaml"
+with open(constants_path, "r") as file:
+    constants = yaml.safe_load(file)
+JOINT_UNITREE_TO_ISAAC_LAB_MAPPING = constants["JOINT_UNITREE_TO_ISAAC_LAB_MAPPING"]
+
+
+# from original gym amp implementation:
+# each motion file is of shape (num_frames, num_retargeted_featuers) = (X , 61)
 
 
 class AMPLoader:
-
     POS_SIZE = 3
     ROT_SIZE = 4
     JOINT_POS_SIZE = 12
@@ -47,6 +57,58 @@ class AMPLoader:
 
     TAR_TOE_VEL_LOCAL_START_IDX = JOINT_VEL_END_IDX
     TAR_TOE_VEL_LOCAL_END_IDX = TAR_TOE_VEL_LOCAL_START_IDX + TAR_TOE_VEL_LOCAL_SIZE
+
+    print(
+        "ROOT_POS_START_IDX:", ROOT_POS_START_IDX, "ROOT_POS_END_IDX:", ROOT_POS_END_IDX
+    )
+    print(
+        "ROOT_ROT_START_IDX:", ROOT_ROT_START_IDX, "ROOT_ROT_END_IDX:", ROOT_ROT_END_IDX
+    )
+    print(
+        "JOINT_POSE_START_IDX:",
+        JOINT_POSE_START_IDX,
+        "JOINT_POSE_END_IDX:",
+        JOINT_POSE_END_IDX,
+    )
+    print(
+        "TAR_TOE_POS_LOCAL_START_IDX:",
+        TAR_TOE_POS_LOCAL_START_IDX,
+        "TAR_TOE_POS_LOCAL_END_IDX:",
+        TAR_TOE_POS_LOCAL_END_IDX,
+    )
+    print(
+        "LINEAR_VEL_START_IDX:",
+        LINEAR_VEL_START_IDX,
+        "LINEAR_VEL_END_IDX:",
+        LINEAR_VEL_END_IDX,
+    )
+    print(
+        "ANGULAR_VEL_START_IDX:",
+        ANGULAR_VEL_START_IDX,
+        "ANGULAR_VEL_END_IDX:",
+        ANGULAR_VEL_END_IDX,
+    )
+    print(
+        "JOINT_VEL_START_IDX:",
+        JOINT_VEL_START_IDX,
+        "JOINT_VEL_END_IDX:",
+        JOINT_VEL_END_IDX,
+    )
+    print(
+        "TAR_TOE_VEL_LOCAL_START_IDX:",
+        TAR_TOE_VEL_LOCAL_START_IDX,
+        "TAR_TOE_VEL_LOCAL_END_IDX:",
+        TAR_TOE_VEL_LOCAL_END_IDX,
+    )
+    
+    # ROOT_POS_START_IDX: 0 ROOT_POS_END_IDX: 3
+    # ROOT_ROT_START_IDX: 3 ROOT_ROT_END_IDX: 7
+    # JOINT_POSE_START_IDX: 7 JOINT_POSE_END_IDX: 19
+    # TAR_TOE_POS_LOCAL_START_IDX: 19 TAR_TOE_POS_LOCAL_END_IDX: 31
+    # LINEAR_VEL_START_IDX: 31 LINEAR_VEL_END_IDX: 34
+    # ANGULAR_VEL_START_IDX: 34 ANGULAR_VEL_END_IDX: 37
+    # JOINT_VEL_START_IDX: 37 JOINT_VEL_END_IDX: 49
+    # TAR_TOE_VEL_LOCAL_START_IDX: 49 TAR_TOE_VEL_LOCAL_END_IDX: 61
 
     def __init__(
             self,
@@ -83,7 +145,7 @@ class AMPLoader:
             with open(motion_file, "r") as f:
                 motion_json = json.load(f)
                 motion_data = np.array(motion_json["Frames"])
-                motion_data = self.reorder_from_pybullet_to_isaac(motion_data)
+                motion_data = self.reorder_from_pybullet_to_isaac_lab(motion_data)
 
                 # Normalize and standardize quaternions.
                 for f_i in range(motion_data.shape[0]):
@@ -167,33 +229,27 @@ class AMPLoader:
 
         return amp_data_indices
 
-    def reorder_from_pybullet_to_isaac(self, motion_data):
-        """Convert from PyBullet ordering to Isaac ordering.
-
-        Rearranges leg and joint order from PyBullet [FR, FL, RR, RL] to
-        IsaacGym order [FL, FR, RL, RR].
-        """
+    def reorder_from_pybullet_to_isaac_lab(self, motion_data):
+        """Joint order is different from isaac lab to isaac gym. This function arranges joints order from pybullet to isaac lab order."""
+        
         root_pos = AMPLoader.get_root_pos_batch(motion_data)
         root_rot = AMPLoader.get_root_rot_batch(motion_data)
+        
+        lin_vel = AMPLoader.get_linear_vel_batch(motion_data)
+        ang_vel = AMPLoader.get_angular_vel_batch(motion_data)
 
-        jp_fr, jp_fl, jp_rr, jp_rl = np.split(
-            AMPLoader.get_joint_pose_batch(motion_data), 4, axis=1)
-        joint_pos = np.hstack([jp_fl, jp_fr, jp_rl, jp_rr])
+        joint_pos = AMPLoader.get_joint_pose_batch(motion_data)[:, JOINT_UNITREE_TO_ISAAC_LAB_MAPPING]
+        
+        joint_vel =  AMPLoader.get_joint_vel_batch(motion_data)[:,JOINT_UNITREE_TO_ISAAC_LAB_MAPPING]
+        
+        # TODO check if foot pos and vel get the correct order!
+        fv_fr, fv_fl, fv_rr, fv_rl = np.split(
+            AMPLoader.get_tar_toe_vel_local_batch(motion_data), 4, axis=1)
+        foot_vel = np.hstack([fv_fl, fv_fr, fv_rl, fv_rr])
 
         fp_fr, fp_fl, fp_rr, fp_rl = np.split(
             AMPLoader.get_tar_toe_pos_local_batch(motion_data), 4, axis=1)
         foot_pos = np.hstack([fp_fl, fp_fr, fp_rl, fp_rr])
-
-        lin_vel = AMPLoader.get_linear_vel_batch(motion_data)
-        ang_vel = AMPLoader.get_angular_vel_batch(motion_data)
-
-        jv_fr, jv_fl, jv_rr, jv_rl = np.split(
-            AMPLoader.get_joint_vel_batch(motion_data), 4, axis=1)
-        joint_vel = np.hstack([jv_fl, jv_fr, jv_rl, jv_rr])
-
-        fv_fr, fv_fl, fv_rr, fv_rl = np.split(
-            AMPLoader.get_tar_toe_vel_local_batch(motion_data), 4, axis=1)
-        foot_vel = np.hstack([fv_fl, fv_fr, fv_rl, fv_rr])
 
         return np.hstack(
             [root_pos, root_rot, joint_pos, foot_pos, lin_vel, ang_vel,
