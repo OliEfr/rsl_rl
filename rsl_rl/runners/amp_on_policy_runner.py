@@ -93,7 +93,7 @@ class AMPOnPolicyRunner:
             train_cfg['amp_discr_hidden_dims'], device,
             train_cfg['amp_task_reward_lerp']).to(self.device)
 
-        alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
+        alg_class = eval(self.alg_cfg.pop("class_name"))  # AMPPPO
         # self.env.unwrapped.scene["robot"].data.soft_joint_pos_limits.shape
         min_std = torch.tensor(self.cfg["min_normalized_std"], device=self.device) * (
             torch.abs(
