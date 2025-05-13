@@ -18,6 +18,7 @@ constants_path = "source/constants.yaml"
 with open(constants_path, "r") as file:
     constants = yaml.safe_load(file)
 JOINT_UNITREE_TO_ISAAC_LAB_MAPPING = constants["JOINT_UNITREE_TO_ISAAC_LAB_MAPPING"]
+QUAT_PYBULLET_TO_ISAAC_LAB_MAPPING = constants["QUAT_PYBULLET_TO_ISAAC_LAB_MAPPING"]
 
 
 # from original gym amp implementation:
@@ -229,11 +230,12 @@ class AMPLoader:
 
         return amp_data_indices
 
-    def reorder_from_pybullet_to_isaac_lab(self, motion_data):
+    @staticmethod
+    def reorder_from_pybullet_to_isaac_lab(motion_data):
         """Joint order is different from isaac lab to isaac gym. This function arranges joints order from pybullet to isaac lab order."""
         
         root_pos = AMPLoader.get_root_pos_batch(motion_data)
-        root_rot = AMPLoader.get_root_rot_batch(motion_data)
+        root_rot = AMPLoader.get_root_rot_batch(motion_data)[:,QUAT_PYBULLET_TO_ISAAC_LAB_MAPPING]
         
         lin_vel = AMPLoader.get_linear_vel_batch(motion_data)
         ang_vel = AMPLoader.get_angular_vel_batch(motion_data)
@@ -254,7 +256,7 @@ class AMPLoader:
         return np.hstack(
             [root_pos, root_rot, joint_pos, foot_pos, lin_vel, ang_vel,
              joint_vel, foot_vel])
-
+        
     def weighted_traj_idx_sample(self):
         """Get traj idx via weighted sampling."""
         return np.random.choice(
