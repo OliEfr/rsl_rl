@@ -1,3 +1,7 @@
+[build-system]
+requires = ["pip"]
+
+
 [tool.isort]
 
 py_version = 37

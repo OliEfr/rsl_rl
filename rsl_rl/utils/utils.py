@@ -94,7 +94,7 @@ def quaternion_slerp(q0, q1, fraction, spin=0, shortestpath=True):
     """Batch quaternion spherical linear interpolation."""
 
     out = torch.zeros_like(q0)
-
+    
     zero_mask = torch.isclose(fraction, torch.zeros_like(fraction)).squeeze()
     ones_mask = torch.isclose(fraction, torch.ones_like(fraction)).squeeze()
     out[zero_mask] = q0[zero_mask]
@@ -109,6 +109,7 @@ def quaternion_slerp(q0, q1, fraction, spin=0, shortestpath=True):
         d = torch.where(d_old < 0, -d, d)
         q1 = torch.where(d_old < 0, -q1, q1)
 
+    d = torch.clamp(d, -1.0 + _EPS, 1.0 - _EPS)
     angle = torch.acos(d) + spin * torch.pi
     angle_mask = (torch.abs(angle) < _EPS).squeeze()
     out[angle_mask] = q0[angle_mask]

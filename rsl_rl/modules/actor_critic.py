@@ -16,7 +16,6 @@ class ActorFreq(nn.Module):
 
         self.state_history_length = 5
         self.obs_single_step = actor_layers[0].in_features //  self.state_history_length
-        assert self.obs_single_step == 56
 
         self.cmd_start = 6
         self.cmd_end = 9

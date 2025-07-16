@@ -101,6 +101,14 @@ class AMPOnPolicyRunner:
                 - self.env.unwrapped.scene["robot"].data.soft_joint_pos_limits[0, :, 0]
             )
         )
+        # for residual RL
+        # min_std = torch.tensor(self.cfg["min_normalized_std"], device=self.device)
+        # ref = torch.abs(
+        #     self.env.unwrapped.scene["robot"].data.soft_joint_pos_limits[0, :, 1]
+        #     - self.env.unwrapped.scene["robot"].data.soft_joint_pos_limits[0, :, 0]
+        # )
+        # ref = torch.cat((ref, ref[-1].unsqueeze(0)))
+        # min_std *= ref
         self.alg: AMPPPO = alg_class(actor_critic, discriminator, amp_data, amp_normalizer, device=self.device, min_std=min_std, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]

@@ -280,7 +280,8 @@ class AMPLoader:
         time_samples = self.trajectory_lens[traj_idxs] * np.random.uniform(size=len(traj_idxs)) - subst
         return np.maximum(np.zeros_like(time_samples), time_samples)
 
-    def slerp(self, val0, val1, blend):
+    @staticmethod
+    def slerp(val0, val1, blend):
         return (1.0 - blend) * val0 + blend * val1
 
     def get_trajectory(self, traj_idx):
@@ -295,7 +296,7 @@ class AMPLoader:
         frame_start = self.trajectories[traj_idx][idx_low]
         frame_end = self.trajectories[traj_idx][idx_high]
         blend = p * n - idx_low
-        return self.slerp(frame_start, frame_end, blend)
+        return AMPLoader.slerp(frame_start, frame_end, blend)
 
     def get_frame_at_time_batch(self, traj_idxs, times):
         """Returns frame for the given trajectory at the specified time."""
@@ -310,7 +311,7 @@ class AMPLoader:
             all_frame_starts[traj_mask] = trajectory[idx_low[traj_mask]]
             all_frame_ends[traj_mask] = trajectory[idx_high[traj_mask]]
         blend = torch.tensor(p * n - idx_low, device=self.device, dtype=torch.float32).unsqueeze(-1)
-        return self.slerp(all_frame_starts, all_frame_ends, blend)
+        return AMPLoader.slerp(all_frame_starts, all_frame_ends, blend)
 
     def get_full_frame_at_time(self, traj_idx, time):
         """Returns full frame for the given trajectory at the specified time."""
@@ -321,7 +322,7 @@ class AMPLoader:
         frame_end = self.trajectories_full[traj_idx][idx_high]
         blend = p * n - idx_low
         return self.blend_frame_pose(frame_start, frame_end, blend)
-
+    
     def get_full_frame_at_time_batch(self, traj_idxs, times):
         p = times / self.trajectory_lens[traj_idxs]
         n = self.trajectory_num_frames[traj_idxs]
@@ -343,9 +344,9 @@ class AMPLoader:
             all_frame_amp_ends[traj_mask] = trajectory[idx_high[traj_mask]][:, AMPLoader.JOINT_POSE_START_IDX:AMPLoader.JOINT_VEL_END_IDX]
         blend = torch.tensor(p * n - idx_low, device=self.device, dtype=torch.float32).unsqueeze(-1)
 
-        pos_blend = self.slerp(all_frame_pos_starts, all_frame_pos_ends, blend)
+        pos_blend = AMPLoader.slerp(all_frame_pos_starts, all_frame_pos_ends, blend)
         rot_blend = utils.quaternion_slerp(all_frame_rot_starts, all_frame_rot_ends, blend)
-        amp_blend = self.slerp(all_frame_amp_starts, all_frame_amp_ends, blend)
+        amp_blend = AMPLoader.slerp(all_frame_amp_starts, all_frame_amp_ends, blend)
         return torch.cat([pos_blend, rot_blend, amp_blend], dim=-1)
 
     def get_frame(self):
@@ -370,7 +371,8 @@ class AMPLoader:
             times = self.traj_time_sample_batch(traj_idxs)
             return self.get_full_frame_at_time_batch(traj_idxs, times)
 
-    def blend_frame_pose(self, frame0, frame1, blend):
+    @staticmethod
+    def blend_frame_pose(frame0, frame1, blend):
         """Linearly interpolate between two frames, including orientation.
 
         Args:
@@ -381,7 +383,7 @@ class AMPLoader:
         Returns:
             An interpolation of the two frames.
         """
-
+        
         root_pos0, root_pos1 = AMPLoader.get_root_pos(frame0), AMPLoader.get_root_pos(frame1)
         root_rot0, root_rot1 = AMPLoader.get_root_rot(frame0), AMPLoader.get_root_rot(frame1)
         joints0, joints1 = AMPLoader.get_joint_pose(frame0), AMPLoader.get_joint_pose(frame1)
@@ -390,21 +392,24 @@ class AMPLoader:
         angular_vel_0, angular_vel_1 = AMPLoader.get_angular_vel(frame0), AMPLoader.get_angular_vel(frame1)
         joint_vel_0, joint_vel_1 = AMPLoader.get_joint_vel(frame0), AMPLoader.get_joint_vel(frame1)
 
-        blend_root_pos = self.slerp(root_pos0, root_pos1, blend)
+        blend_root_pos = AMPLoader.slerp(root_pos0, root_pos1, blend)
         blend_root_rot = transformations.quaternion_slerp(
             root_rot0.cpu().numpy(), root_rot1.cpu().numpy(), blend)
         blend_root_rot = torch.tensor(
             motion_util.standardize_quaternion(blend_root_rot),
-            dtype=torch.float32, device=self.device)
-        blend_joints = self.slerp(joints0, joints1, blend)
-        blend_tar_toe_pos = self.slerp(tar_toe_pos_0, tar_toe_pos_1, blend)
-        blend_linear_vel = self.slerp(linear_vel_0, linear_vel_1, blend)
-        blend_angular_vel = self.slerp(angular_vel_0, angular_vel_1, blend)
-        blend_joints_vel = self.slerp(joint_vel_0, joint_vel_1, blend)
+            dtype=torch.float32, device="cuda") # self.device not available in static method
+        blend_joints = AMPLoader.slerp(joints0, joints1, blend)
+        blend_tar_toe_pos = AMPLoader.slerp(tar_toe_pos_0, tar_toe_pos_1, blend)
+        blend_linear_vel = AMPLoader.slerp(linear_vel_0, linear_vel_1, blend)
+        blend_angular_vel = AMPLoader.slerp(angular_vel_0, angular_vel_1, blend)
+        blend_joints_vel = AMPLoader.slerp(joint_vel_0, joint_vel_1, blend)
+        
+        assert False, "I didnt expect to enter this function."
 
         return torch.cat([
             blend_root_pos, blend_root_rot, blend_joints, blend_tar_toe_pos,
             blend_linear_vel, blend_angular_vel, blend_joints_vel])
+        
 
     def feed_forward_generator(self, num_mini_batch, mini_batch_size):
         """Generates a batch of AMP transitions."""
