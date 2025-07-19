@@ -156,7 +156,7 @@ class AMPLoader:
 
                 # For reference state initialization we require to transform the root trajectory in our simulation frame. This is done in the following.
                 if self.transform_root_trajectory:
-                    motion_text_file_name = motion_file.split('/')[-1]
+                    motion_text_file_name = motion_file #.split('/')[-1]
                     
                     base_pos = AMPLoader.get_root_pos_batch(motion_data)
                     base_rot = AMPLoader.get_root_rot_batch(motion_data)
