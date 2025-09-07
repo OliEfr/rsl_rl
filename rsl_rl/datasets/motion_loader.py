@@ -157,7 +157,10 @@ class AMPLoader:
                 # For reference state initialization we require to transform the root trajectory in our simulation frame. This is done in the following.
                 if self.transform_root_trajectory:
                     motion_text_file_name = motion_file #.split('/')[-1]
-                    
+                    rsi_data_ = rsi_data.rsi_params.get(
+                        motion_text_file_name, rsi_data.default_rsi_data
+                    )
+
                     base_pos = AMPLoader.get_root_pos_batch(motion_data)
                     base_rot = AMPLoader.get_root_rot_batch(motion_data)
                     base_vel = AMPLoader.get_linear_vel_batch(motion_data)
@@ -174,7 +177,7 @@ class AMPLoader:
                         pitch=torch.tensor(0, device=self.device),
                         yaw=math_utils.deg2rad(
                             torch.tensor(
-                                rsi_data.rsi_params[motion_text_file_name][
+                                rsi_data_[
                                     "reference_trajectory_yaw_rot"
                                 ],
                                 device=self.device,
@@ -188,7 +191,7 @@ class AMPLoader:
                     # transforms
                     base_pos = (
                         base_pos
-                        * rsi_data.rsi_params[motion_text_file_name][
+                        * rsi_data_[
                             "reference_trajectory_scaling"
                         ]
                     )
@@ -199,8 +202,8 @@ class AMPLoader:
                         .float()
                         .T,
                     ).squeeze(-1)
-                    
-                    base_pos += rsi_data.rsi_params[motion_text_file_name][
+
+                    base_pos += rsi_data_[
                         "reference_trajectory_offset"
                     ]
 
@@ -248,6 +251,12 @@ class AMPLoader:
                 self.trajectory_weights.append(
                     float(motion_json["MotionWeight"]))
                 frame_duration = float(motion_json["FrameDuration"])
+                if "vision" in f.name.lower():
+                    assert frame_duration == 0.06, "You most likely want to increase the frame duration, otherwise the expert motion is too fast. The best FrameDuration needs to be manually checked and changed for each expert trajectory."
+                elif "mocap" in f.name.lower():
+                    assert frame_duration == 0.021
+                else:
+                    raise ValueError(f"Unknown motion file: {f.name}")
                 self.trajectory_frame_durations.append(frame_duration)
                 traj_len = (motion_data.shape[0] - 1) * frame_duration
                 self.trajectory_lens.append(traj_len)
